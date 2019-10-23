@@ -8,6 +8,7 @@ from distutils.version import LooseVersion
 import numpy as np
 import torch
 import torch.nn as nn
+from torchvision import transforms
 from scipy.io import loadmat
 import csv
 # ROS imports
@@ -15,7 +16,7 @@ import rospy
 import sensor_msgs.msg
 from cv_bridge import CvBridge, CvBridgeError
 # Our libs
-from dataset import TestDataset
+from dataset import MemDataset
 from models import ModelBuilder, SegmentationModule
 from utils import colorEncode, find_recursive, setup_logger
 from lib.nn import user_scattered_collate, async_copy_to
@@ -39,6 +40,10 @@ class SegmentImage():
         self.gpu = gpu
         self.img_in = img_in
         self.img_out = img_out
+        self.padding_constant = self.cfg.DATASET.padding_constant
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225])
         self.bridge = CvBridge() 
 
     def imresize(self, im, size, interp='bilinear'):
@@ -90,17 +95,17 @@ class SegmentImage():
         return img
 
     
-    def test(self, loader):
+    def process_image(self, loader):
         self.segmentation_module.eval()
     
         pbar = tqdm(total=len(loader))
+        # process data
         for batch_data in loader:
-            # process data
             batch_data = batch_data[0]
             segSize = (batch_data['img_ori'].shape[0],
-                       batch_data['img_ori'].shape[1])
+                        batch_data['img_ori'].shape[1])
             img_resized_list = batch_data['img_data']
-    
+
             with torch.no_grad():
                 scores = torch.zeros(1, self.cfg.DATASET.num_class, segSize[0], segSize[1])
                 scores = async_copy_to(scores, self.gpu)
@@ -111,9 +116,9 @@ class SegmentImage():
                     del feed_dict['img_ori']
                     del feed_dict['info']
                     feed_dict = async_copy_to(feed_dict, self.gpu)
-    
+
                     # forward pass
-                    pred_tmp = segmentation_module(feed_dict, segSize=segSize)
+                    pred_tmp = self.segmentation_module(feed_dict, segSize=segSize)
                     scores = scores + pred_tmp / len(self.cfg.DATASET.imgSizes)
     
                 _, pred = torch.max(scores, dim=1)
@@ -137,34 +142,17 @@ class SegmentImage():
         except CvBridgeError as e:
             rospy.logerr(e)
 
+        imgs = []
         # Need it in PIL?
         PILimg = Image.fromarray(cv_image)
-        ori_width, ori_height = cv_image.size
-    
-        img_resized_list = []
-        for this_short_size in self.cfg.DATASET.imgSizes:
-            # calculate target height and width
-            scale = min(this_short_size / float(min(ori_height, ori_width)),
-                        self.cfg.DATASET.imgMaxSize / float(max(ori_height, ori_width)))
-            target_height, target_width = int(ori_height * scale), int(ori_width * scale)
-        
-            # to avoid rounding in network
-            target_width = self.round2nearest_multiple(target_width, self.padding_constant)
-            target_height = self.round2nearest_multiple(target_height, self.padding_constant)
-    
-            # resize images
-            img_resized = self.imresize(PILimg, (target_width, target_height), interp='bilinear')
-        
-            # image transform, to torch float tensor 3xHxW
-            img_resized = self.img_transform(img_resized)
-            img_resized = torch.unsqueeze(img_resized, 0)
-            img_resized_list.append(img_resized)
-    
-    
-        dataset = dict()
-        dataset['img_ori'] = np.asarray(PILimg)
-        dataset['img_data'] = [x.contiguous() for x in img_resized_list]
-        dataset['info'] = img.header
+        # In case we ever want to batch multiple images
+        imgs.append(PILimg)
+        img_list = [{'img': x} for x in imgs]
+
+        dataset = MemDataset(
+                img_list,
+                cfg.DATASET
+                )
         
         loader = torch.utils.data.DataLoader(
             dataset,
@@ -174,10 +162,11 @@ class SegmentImage():
             num_workers=5,
             drop_last=True)
 
+
        # img_labels = self.segment(gpu)
     
         # Main loop
-        test(load)
+        self.process_image(loader)
     
         rospy.loginfo('Inference done in %s seconds' % (rospy.Time.now() - tic))
     

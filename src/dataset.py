@@ -294,3 +294,44 @@ class TestDataset(BaseDataset):
 
     def __len__(self):
         return self.num_sample
+
+
+class MemDataset(BaseDataset):
+    def __init__(self, odgt, opt, **kwargs):
+        super(MemDataset, self).__init__(odgt, opt, **kwargs)
+
+    def __getitem__(self, index):
+        this_record = self.list_sample[index]
+        # load image
+        input_img = this_record['img']
+        img = input_img.convert('RGB')
+
+        ori_width, ori_height = img.size
+
+        img_resized_list = []
+        for this_short_size in self.imgSizes:
+            # calculate target height and width
+            scale = min(this_short_size / float(min(ori_height, ori_width)),
+                        self.imgMaxSize / float(max(ori_height, ori_width)))
+            target_height, target_width = int(ori_height * scale), int(ori_width * scale)
+
+            # to avoid rounding in network
+            target_width = self.round2nearest_multiple(target_width, self.padding_constant)
+            target_height = self.round2nearest_multiple(target_height, self.padding_constant)
+
+            # resize images
+            img_resized = imresize(img, (target_width, target_height), interp='bilinear')
+
+            # image transform, to torch float tensor 3xHxW
+            img_resized = self.img_transform(img_resized)
+            img_resized = torch.unsqueeze(img_resized, 0)
+            img_resized_list.append(img_resized)
+
+        output = dict()
+        output['img_ori'] = np.array(img)
+        output['img_data'] = [x.contiguous() for x in img_resized_list]
+        output['info'] = this_record['img']
+        return output
+
+    def __len__(self):
+        return self.num_sample
