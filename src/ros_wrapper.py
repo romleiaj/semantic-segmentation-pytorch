@@ -8,11 +8,11 @@ from distutils.version import LooseVersion
 import numpy as np
 import torch
 import torch.nn as nn
-from torchvision import transforms
 from scipy.io import loadmat
 import csv
 # ROS imports
 import rospy
+# Have to import this way to prevent name conflicts with PIL
 import sensor_msgs.msg
 from cv_bridge import CvBridge, CvBridgeError
 # Our libs
@@ -40,23 +40,7 @@ class SegmentImage():
         self.gpu = gpu
         self.img_in = img_in
         self.img_out = img_out
-        self.padding_constant = self.cfg.DATASET.padding_constant
-        self.normalize = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225])
         self.bridge = CvBridge() 
-
-    def imresize(self, im, size, interp='bilinear'):
-        if interp == 'nearest':
-            resample = Image.NEAREST
-        elif interp == 'bilinear':
-            resample = Image.BILINEAR
-        elif interp == 'bicubic':
-            resample = Image.BICUBIC
-        else:
-            raise Exception('resample method undefined!')
-
-        return im.resize(size, resample)
 
 
     def visualize_result(self, data, pred, cfg):
@@ -79,23 +63,11 @@ class SegmentImage():
         # aggregate images and save
         im_vis = np.concatenate((img, pred_color), axis=1)
     
-        img_name = info.split('/')[-1]
-        Image.fromarray(im_vis).save(
-            os.path.join(cfg.TEST.result, img_name.replace('.jpg', '.png')))
+        img_name = "test.jpg"
+        #Image.fromarray(im_vis).save(
+        #    os.path.join(cfg.TEST.result, img_name.replace('.jpg', '.png')))
 
-        # Round x to the nearest multiple of p and x' >= x
-    def round2nearest_multiple(self, x, p):
-        return ((x - 1) // p + 1) * p
-
-    def img_transform(self, img):
-        # 0-255 to 0-1
-        img = np.float32(np.array(img)) / 255.
-        img = img.transpose((2, 0, 1))
-        img = self.normalize(torch.from_numpy(img.copy()))
-        return img
-
-    
-    def process_image(self, loader):
+    def run_inference(self, loader):
         self.segmentation_module.eval()
     
         pbar = tqdm(total=len(loader))
@@ -125,7 +97,7 @@ class SegmentImage():
                 pred = as_numpy(pred.squeeze(0).cpu())
     
             # visualization
-            visualize_result(
+            self.visualize_result(
                 (batch_data['img_ori'], batch_data['info']),
                 pred,
                 self.cfg
@@ -134,7 +106,7 @@ class SegmentImage():
             pbar.update(1)
     
     def image_callback(self, img):
-        tic = rospy.Time.now()
+        tic = rospy.get_rostime()
         rospy.loginfo("Processing image...")
     
         try:
@@ -162,13 +134,11 @@ class SegmentImage():
             num_workers=5,
             drop_last=True)
 
-
        # img_labels = self.segment(gpu)
     
-        # Main loop
-        self.process_image(loader)
-    
-        rospy.loginfo('Inference done in %s seconds' % (rospy.Time.now() - tic))
+        self.run_inference(loader)
+        rospy.loginfo('Inference done in %.03f seconds.' % 
+                ((rospy.get_rostime() - tic).to_sec()))
     
     def main(self):
     
