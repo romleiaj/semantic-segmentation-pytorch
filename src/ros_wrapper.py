@@ -60,10 +60,13 @@ class SegmentImage():
         # colorize prediction
         pred_color = colorEncode(pred, colors).astype(np.uint8)
     
-        # aggregate images and save
+        # aggregate images and publish
         im_vis = np.concatenate((img, pred_color), axis=1)
+        
+        img_msg = self.bridge.cv2_to_imgmsg(im_vis, encoding='rgb8')
+        self.seg_pub.publish(img_msg)
     
-        img_name = "test.jpg"
+        #img_name = "test.jpg"
         #Image.fromarray(im_vis).save(
         #    os.path.join(cfg.TEST.result, img_name.replace('.jpg', '.png')))
 
@@ -189,19 +192,15 @@ if __name__ == '__main__':
     cfg.MODEL.arch_encoder = cfg.MODEL.arch_encoder.lower()
     cfg.MODEL.arch_decoder = cfg.MODEL.arch_decoder.lower()
 
-    print(cfg)
-
     cfg.DIR = ("%s/%s" % 
                     (os.path.dirname(os.path.dirname(yamlcfg)),
                     cfg.DIR.split('/')[1]))
-    print(cfg.DIR)
 
     # absolute paths of model weights
     cfg.MODEL.weights_encoder = os.path.join(
         cfg.DIR, 'encoder_' + cfg.TEST.checkpoint)
     cfg.MODEL.weights_decoder = os.path.join(
         cfg.DIR, 'decoder_' + cfg.TEST.checkpoint)
-    print(cfg.MODEL.weights_encoder)
 
 
     assert os.path.exists(cfg.MODEL.weights_encoder) and \
