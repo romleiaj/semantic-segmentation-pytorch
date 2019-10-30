@@ -4,6 +4,8 @@
 import os
 import argparse
 from distutils.version import LooseVersion
+import queue
+import threading
 # Numerical libs
 import numpy as np
 import torch
@@ -41,6 +43,7 @@ class SegmentImage():
         self.img_in = img_in
         self.img_out = img_out
         self.bridge = CvBridge() 
+        self.loader_q = queue.Queue(1)
 
 
     def visualize_result(self, data, pred, cfg):
@@ -70,7 +73,14 @@ class SegmentImage():
         #Image.fromarray(im_vis).save(
         #    os.path.join(cfg.TEST.result, img_name.replace('.jpg', '.png')))
 
-    def run_inference(self, loader):
+    def run_inference(self):
+        rospy.loginfo("Waiting for loader from queue...")
+        while self.loader_q.empty():
+            rospy.sleep(0.01)
+        tic = rospy.get_rostime()
+        rospy.loginfo("Processing image...")
+        loader = self.loader_q.get()
+
         self.segmentation_module.eval()
     
         pbar = tqdm(total=len(loader))
@@ -98,6 +108,8 @@ class SegmentImage():
     
                 _, pred = torch.max(scores, dim=1)
                 pred = as_numpy(pred.squeeze(0).cpu())
+   #         print(dir(scores))
+  #          print(scores.shape)
     
             # visualization
             self.visualize_result(
@@ -105,13 +117,15 @@ class SegmentImage():
                 pred,
                 self.cfg
             )
-    
             pbar.update(1)
+        
+        rospy.loginfo('Inference done in %.03f seconds.' % 
+                ((rospy.get_rostime() - tic).to_sec()))
     
     def image_callback(self, img):
-        tic = rospy.get_rostime()
-        rospy.loginfo("Processing image...")
-    
+        if self.loader_q.full():
+            return
+        
         try:
             cv_image = self.bridge.imgmsg_to_cv2(img, desired_encoding="rgb8")
         except CvBridgeError as e:
@@ -120,6 +134,7 @@ class SegmentImage():
         imgs = []
         # Need it in PIL?
         PILimg = Image.fromarray(cv_image)
+        PILimg = PILimg.resize((480, 320))
         # In case we ever want to batch multiple images
         imgs.append(PILimg)
         img_list = [{'img': x} for x in imgs]
@@ -139,9 +154,7 @@ class SegmentImage():
 
        # img_labels = self.segment(gpu)
     
-        self.run_inference(loader)
-        rospy.loginfo('Inference done in %.03f seconds.' % 
-                ((rospy.get_rostime() - tic).to_sec()))
+        self.loader_q.put(loader)
     
     def main(self):
     
@@ -164,11 +177,15 @@ class SegmentImage():
         self.segmentation_module = SegmentationModule(net_encoder, net_decoder, crit)
         self.segmentation_module.cuda()
 
-        self.seg_pub = rospy.Publisher(self.img_out, sensor_msgs.msg.Image, queue_size=10)
+        self.seg_pub = rospy.Publisher(self.img_out, sensor_msgs.msg.Image, queue_size=1)
         rospy.Subscriber(self.img_in, sensor_msgs.msg.Image, self.image_callback)
     
         rospy.loginfo("Listening for image messages on topic %s..." % self.img_in)
         rospy.loginfo("Publishing segmented images to topic %s..." % self.img_out)
+
+        while not rospy.is_shutdown():
+            self.run_inference()
+
         rospy.spin()
 
 
