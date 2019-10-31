@@ -44,6 +44,10 @@ class SegmentImage():
         self.img_out = img_out
         self.bridge = CvBridge() 
         self.loader_q = queue.Queue(1)
+        self.ready = True
+        self.PERSON = 12 # index of persons
+        # [sidewalk, path, runway, road, floor]
+        self.DRIVEABLE = [11, 52, 54, 6, 3]
 
 
     def visualize_result(self, data, pred, cfg):
@@ -73,13 +77,9 @@ class SegmentImage():
         #Image.fromarray(im_vis).save(
         #    os.path.join(cfg.TEST.result, img_name.replace('.jpg', '.png')))
 
-    def run_inference(self):
-        rospy.loginfo("Waiting for loader from queue...")
-        while self.loader_q.empty():
-            rospy.sleep(0.01)
-        tic = rospy.get_rostime()
+    def run_inference(self, loader):
         rospy.loginfo("Processing image...")
-        loader = self.loader_q.get()
+        tic = rospy.get_rostime()
 
         self.segmentation_module.eval()
     
@@ -87,8 +87,9 @@ class SegmentImage():
         # process data
         for batch_data in loader:
             batch_data = batch_data[0]
-            segSize = (batch_data['img_ori'].shape[0],
-                        batch_data['img_ori'].shape[1])
+            h, w = batch_data['img_ori'].shape[:2]
+            segSize = (h, w)
+            new_img = np.zeros((h, w, 3))
             img_resized_list = batch_data['img_data']
 
             with torch.no_grad():
@@ -106,24 +107,35 @@ class SegmentImage():
                     pred_tmp = self.segmentation_module(feed_dict, segSize=segSize)
                     scores = scores + pred_tmp / len(self.cfg.DATASET.imgSizes)
     
-                _, pred = torch.max(scores, dim=1)
-                pred = as_numpy(pred.squeeze(0).cpu())
-   #         print(dir(scores))
-  #          print(scores.shape)
+                #_, pred = torch.max(scores, dim=1)
+                #pred = as_numpy(pred.squeeze(0).cpu())
+                nparr = as_numpy(scores.squeeze(0).cpu())
+                
+            # Putting drivable in green channel
+            new_img[:, :, 1] = np.sum(nparr[self.DRIVEABLE], axis=0)
+            # Person in red channel
+            new_img[:, :, 0] = nparr[self.PERSON, :, :]
+            # Converting to uint8
+            uint_img = (new_img* 255).astype('uint8')
+            # Placing original and segmented image side-by-side
+            im_vis = np.concatenate((batch_data['img_ori'], uint_img), axis=1)
+            img_msg = self.bridge.cv2_to_imgmsg(im_vis, encoding='rgb8')
+            self.seg_pub.publish(img_msg)
     
             # visualization
-            self.visualize_result(
-                (batch_data['img_ori'], batch_data['info']),
-                pred,
-                self.cfg
-            )
+            #self.visualize_result(
+            #    (batch_data['img_ori'], batch_data['info']),
+            #    pred2,
+            #    self.cfg
+            #)
             pbar.update(1)
         
         rospy.loginfo('Inference done in %.03f seconds.' % 
                 ((rospy.get_rostime() - tic).to_sec()))
     
     def image_callback(self, img):
-        if self.loader_q.full():
+        # Only want to update if there isn't an image already being processed
+        if not self.ready:
             return
         
         try:
@@ -134,7 +146,7 @@ class SegmentImage():
         imgs = []
         # Need it in PIL?
         PILimg = Image.fromarray(cv_image)
-        PILimg = PILimg.resize((480, 320))
+        PILimg = PILimg.resize((1000, 600))
         # In case we ever want to batch multiple images
         imgs.append(PILimg)
         img_list = [{'img': x} for x in imgs]
@@ -183,8 +195,16 @@ class SegmentImage():
         rospy.loginfo("Listening for image messages on topic %s..." % self.img_in)
         rospy.loginfo("Publishing segmented images to topic %s..." % self.img_out)
 
+        rospy.loginfo("Waiting for loader from queue...")
         while not rospy.is_shutdown():
-            self.run_inference()
+            rospy.sleep(0.01)
+            try:
+                loader = self.loader_q.get_nowait()
+                self.ready = False
+                self.run_inference(loader)
+                self.ready = True
+            except queue.Empty:
+                pass
 
         rospy.spin()
 
