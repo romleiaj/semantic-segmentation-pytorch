@@ -42,6 +42,8 @@ class SegmentImage():
         self.gpu = gpu
         self.img_in = img_in
         self.img_out = img_out
+        self.time_ori = rospy.Duration(0)
+        self.frame_id = ""
         self.bridge = CvBridge() 
         self.loader_q = queue.Queue(1)
         self.ready = True
@@ -116,10 +118,12 @@ class SegmentImage():
             # Person in red channel
             new_img[:, :, 0] = nparr[self.PERSON, :, :]
             # Converting to uint8
-            uint_img = (new_img* 255).astype('uint8')
+            uint_img = (new_img * 255).astype('uint8')
             # Placing original and segmented image side-by-side
             im_vis = np.concatenate((batch_data['img_ori'], uint_img), axis=1)
             img_msg = self.bridge.cv2_to_imgmsg(im_vis, encoding='rgb8')
+            img_msg.header.frame_id = self.frame_id
+            img_msg.header.stamp = self.time_ori
             self.seg_pub.publish(img_msg)
     
             # visualization
@@ -130,8 +134,8 @@ class SegmentImage():
             #)
             pbar.update(1)
         
-        rospy.loginfo('Inference done in %.03f seconds.' % 
-                ((rospy.get_rostime() - tic).to_sec()))
+        rospy.loginfo('Image latency of %.03f seconds.' % 
+                ((rospy.get_rostime() - self.time_ori).to_sec()))
     
     def image_callback(self, img):
         # Only want to update if there isn't an image already being processed
@@ -165,7 +169,8 @@ class SegmentImage():
             drop_last=True)
 
        # img_labels = self.segment(gpu)
-    
+        self.time_ori = img.header.stamp
+        self.frame_id = img.header.frame_id
         self.loader_q.put(loader)
     
     def main(self):
